@@ -88,6 +88,7 @@ resource "ncloud_server" "web" {
   subnet_no           = ncloud_subnet.public.id
   server_image_number = data.ncloud_server_image_numbers.kvm-image.image_number_list.0.server_image_number
   server_spec_code    = data.ncloud_server_specs.kvm-spec.server_spec_list.0.server_spec_code
+  init_script_no      = ncloud_init_script.ssh_bootstrap.id
   login_key_name = "ncp20250904"
 
   network_interface {
@@ -148,4 +149,36 @@ resource "ncloud_lb_target_group_attachment" "ex_lb_target_group_attach" {
     ncloud_lb_target_group.ex_lb_target_group,
     ncloud_server.web
   ]
+}
+
+locals {
+  ssh_pub = file(pathexpand(var.ssh_public_key_path))
+}
+
+resource "ncloud_init_script" "ssh_bootstrap" {
+  name        = "init-ssh-root-pubkey"
+  os_type     = "LNX"
+  description = "Enable root pubkey login and install provided public key"
+
+  content = <<-EOT
+    #!/bin/bash
+    set -eux
+
+    PUBKEY='${replace(trimspace(local.ssh_pub), "'", "'\\''")}'
+
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    if ! grep -q "$${PUBKEY}" /root/.ssh/authorized_keys 2>/dev/null; then
+      echo "$${PUBKEY}" >> /root/.ssh/authorized_keys
+    fi
+    chmod 600 /root/.ssh/authorized_keys
+
+    SSHD="/etc/ssh/sshd_config"
+    cp -a "$$SSHD" "$${SSHD}.bak.$$(date +%s)" || true
+    sed -i 's/^#\\?PermitRootLogin .*/PermitRootLogin yes/' "$$SSHD"
+    sed -i 's/^#\\?PubkeyAuthentication .*/PubkeyAuthentication yes/' "$$SSHD"
+    sed -i 's/^#\\?PasswordAuthentication .*/PasswordAuthentication no/' "$$SSHD"
+
+    systemctl restart sshd || systemctl restart ssh || true
+  EOT
 }
