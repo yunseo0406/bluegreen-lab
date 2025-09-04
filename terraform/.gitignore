@@ -1,0 +1,9 @@
+# Terraform 기본 무시 목록
+*.tfstate
+*.tfstate.backup
+.terraform/
+terraform.tfvars
+
+# 네이버 클라우드 키 숨기기
+.env
+*.pem
