@@ -1,66 +1,49 @@
 ---
-# Play 1) Terraform 실행 + 출력 수집 + 동적 호스트 추가
+# Play 1: Terraform apply + outputs 수집 + 동적 호스트 추가
 - name: Provision infra with Terraform and collect outputs
   hosts: localhost
   connection: local
   gather_facts: false
   vars:
-    terraform_dir: "../terraform"                 # 필요시 경로 조정
-    ssh_key_path: "~/.ssh/ncp20250904.pem"        # 네가 만든 PEM 경로
-    ssh_user: "ubuntu"                            # Ubuntu 이미지 기준(ROCKY면 rocky/centos)
-    tf_state: "present"                           # present=apply, absent=destroy
+    terraform_dir: "../terraform"
+    ssh_key_path: "~/.ssh/ncp20250904.pem"
+    ssh_user: "ubuntu"
   tasks:
-    - name: Ensure Terraform CLI is available
-      ansible.builtin.command: terraform -version
-      register: tf_ver
+    - name: Terraform apply
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} apply -auto-approve
+      register: tf_apply
+      changed_when: "'No changes.' not in tf_apply.stdout"
+
+    - name: Get web_public_ip
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} output -raw web_public_ip
+      register: web_ip_cmd
       changed_when: false
 
-    - name: Ensure ssh key permissions
-      ansible.builtin.file:
-        path: "{{ ssh_key_path | expanduser }}"
-        mode: "0600"
+    - name: Try get alb_domain (may not exist)
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} output -raw alb_domain
+      register: alb_cmd
+      changed_when: false
+      failed_when: false
 
-    - name: Terraform {{ tf_state }}
-      community.general.terraform:
-        project_path: "{{ terraform_dir }}"
-        force_init: true
-        state: "{{ tf_state }}"   # present=apply / absent=destroy
-      register: tf_apply
-
-    - name: Read Terraform outputs
-      when: tf_state == "present"
-      community.general.terraform_output:
-        project_path: "{{ terraform_dir }}"
-      register: tf_out
-
-    - name: Set facts from outputs
-      when: tf_state == "present"
+    - name: Set facts
       ansible.builtin.set_fact:
-        web_public_ip: "{{ tf_out.outputs.web_public_ip.value }}"
-        alb_domain: "{{ (tf_out.outputs.alb_domain.value | default('')) }}"
+        web_public_ip: "{{ web_ip_cmd.stdout }}"
+        alb_domain: "{{ alb_cmd.stdout | default('') }}"
 
-    - name: Show outputs
-      when: tf_state == "present"
-      ansible.builtin.debug:
-        msg:
-          - "WEB IP: {{ web_public_ip }}"
-          - "ALB: {{ alb_domain | default('N/A') }}"
-
-    - name: Wait for SSH on web
-      when: tf_state == "present"
+    - name: Wait for SSH
       ansible.builtin.wait_for:
         host: "{{ web_public_ip }}"
         port: 22
         timeout: 600
 
-    - name: Add dynamic host for next play
-      when: tf_state == "present"
+    - name: Add dynamic host
       ansible.builtin.add_host:
         name: "provisioned_web"
         ansible_host: "{{ web_public_ip }}"
         ansible_user: "{{ ssh_user }}"
         ansible_ssh_private_key_file: "{{ ssh_key_path | expanduser }}"
         groups: ["web"]
+
 
 # Play 2) 새 서버에 Apache 설치 + Version 1 배포 + 검증
 - name: Configure Apache and deploy Version 1
