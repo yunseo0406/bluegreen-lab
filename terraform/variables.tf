@@ -28,3 +28,16 @@ variable "ssh_public_key_path" {
   default = "~/.ssh/ncp20250904.pub"
   
 }
+
+###############################
+# asg 스위치
+###############################
+variable "enable_asg_blue" {
+  type    = bool
+  default = false   # 기본은 비활성(단일 서버만)
+}
+
+variable "attach_single_server" {
+  type    = bool
+  default = true    # 기본은 단일 서버를 TG에 붙여둠
+}
