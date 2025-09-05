@@ -142,6 +142,7 @@ resource "ncloud_lb_listener" "ex_lb_listener" {
 
 # external lb target group attachment
 resource "ncloud_lb_target_group_attachment" "ex_lb_target_group_attach" {
+  count           = var.attach_single_server ? 1 : 0
   target_group_no = ncloud_lb_target_group.ex_lb_target_group.id
   target_no_list  = [ncloud_server.web.id]
 
