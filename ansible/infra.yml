@@ -1,0 +1,60 @@
+---
+- name: Terraform apply & collect outputs, then add dynamic host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    terraform_dir: "../terraform"
+    ssh_key_path: "~/.ssh/ncp20250904.pem"
+    ssh_user: "root"                    # 네 환경에 맞게 (ubuntu/rocky/centos/root)
+  tasks:
+    - name: Ensure ssh key permission
+      ansible.builtin.file:
+        path: "{{ ssh_key_path | expanduser }}"
+        mode: "0600"
+
+    - name: Terraform apply
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} apply -auto-approve
+      register: tf_apply
+      changed_when: "'No changes.' not in tf_apply.stdout"
+
+    - name: Get web_public_ip
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} output -raw web_public_ip
+      register: web_ip_cmd
+      changed_when: false
+
+    - name: Try get alb_domain (optional)
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} output -raw alb_domain
+      register: alb_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: Set facts
+      ansible.builtin.set_fact:
+        web_public_ip: "{{ web_ip_cmd.stdout }}"
+        alb_domain: "{{ alb_cmd.stdout | default('') }}"
+
+    - name: Wait for SSH to be ready
+      ansible.builtin.wait_for:
+        host: "{{ web_public_ip }}"
+        port: 22
+        timeout: 600
+
+    # 동적 인벤토리 추가 (키만 쓰도록 IdentitiesOnly 강제)
+    - name: Add dynamic host group=web
+      ansible.builtin.add_host:
+        name: "provisioned_web"
+        ansible_host: "{{ web_public_ip }}"
+        ansible_user: "{{ ssh_user }}"
+        ansible_ssh_private_key_file: "{{ ssh_key_path | expanduser }}"
+        ansible_ssh_common_args: "-o IdentitiesOnly=yes"
+        groups: ["web"]
+
+    # configure.yml에서 쓸 수 있도록 로컬 파일로도 남겨두기 (선택)
+    - name: Write ephemeral inventory file
+      ansible.builtin.copy:
+        dest: "./.dynamic_web.ini"
+        content: |
+          [web]
+          provisioned_web ansible_host={{ web_public_ip }} ansible_user={{ ssh_user }} ansible_ssh_private_key_file={{ ssh_key_path | expanduser }} ansible_ssh_common_args='-o IdentitiesOnly=yes'
+      delegate_to: localhost

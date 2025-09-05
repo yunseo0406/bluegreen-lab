@@ -1,0 +1,213 @@
+---
+- name: Configure Apache & deploy Version 1
+  hosts: web
+  become: true
+  gather_facts: false   # 먼저 Python 보장 후 facts 수집
+
+  vars:
+    page_title: "NCP Blue-Green Lab"
+    version_label: "Version 1"
+    terraform_dir: "../terraform"   # (옵션) ALB 도메인 읽어올 때 사용
+
+  pre_tasks:
+    # ---- Python 부트스트랩 ----
+    - name: Ensure python3 on Debian/Ubuntu
+      ansible.builtin.raw: |
+        test -e /usr/bin/python3 || (apt-get update -y && apt-get install -y python3)
+      changed_when: false
+      failed_when: false
+
+    - name: Ensure python3 on RHEL/Rocky
+      ansible.builtin.raw: |
+        test -e /usr/bin/python3 || (yum -y install python3 || dnf -y install python3)
+      changed_when: false
+      failed_when: false
+
+    - name: Gather facts now
+      ansible.builtin.setup:
+
+    # ---- Ubuntu/Debian apt 프리플라이트 ----
+    - name: Wait cloud-init (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait || true; fi
+      args: { warn: false }
+      changed_when: false
+      failed_when: false
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: Ensure apt dirs (Debian/Ubuntu)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /var/lib/apt/lists
+        - /var/lib/apt/lists/partial
+        - /var/cache/apt/archives
+        - /var/cache/apt/archives/partial
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: Wait apt/dpkg locks (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        for p in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+          while fuser "$p" >/dev/null 2>&1; do sleep 2; done
+        done
+      changed_when: false
+      failed_when: false
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: dpkg configure (Debian/Ubuntu)
+      ansible.builtin.command: dpkg --configure -a
+      changed_when: false
+      failed_when: false
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: apt-get update (retry, Debian/Ubuntu)
+      ansible.builtin.command: apt-get update -y
+      register: apt_update
+      until: apt_update.rc == 0
+      retries: 5
+      delay: 5
+      when: ansible_facts.os_family == 'Debian'
+
+  tasks:
+    # ---- Apache 설치 ----
+    - name: Install Apache on Debian/Ubuntu
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+        update_cache: true
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: Install Apache on RHEL/Rocky
+      ansible.builtin.yum:
+        name: httpd
+        state: present
+      when: ansible_facts.os_family == 'RedHat'
+
+    # ---- 서비스 기동 ----
+    - name: Enable & start Apache (Debian/Ubuntu)
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: true
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: Enable & start Apache (RHEL/Rocky)
+      ansible.builtin.service:
+        name: httpd
+        state: started
+        enabled: true
+      when: ansible_facts.os_family == 'RedHat'
+
+    # ---- OS별 변수 ----
+    - name: Set web vars (Debian/Ubuntu)
+      ansible.builtin.set_fact:
+        web_docroot: "/var/www/html"
+        web_service: "apache2"
+      when: ansible_facts.os_family == 'Debian'
+
+    - name: Set web vars (RHEL/Rocky)
+      ansible.builtin.set_fact:
+        web_docroot: "/var/www/html"
+        web_service: "httpd"
+      when: ansible_facts.os_family == 'RedHat'
+
+    # ---- 문서 루트 보장 ----
+    - name: Ensure docroot exists
+      ansible.builtin.file:
+        path: "{{ web_docroot }}"
+        state: directory
+        mode: "0755"
+
+    # ---- (RHEL) SELinux 컨텍스트 복구 ----
+    - name: Restore SELinux context on docroot (RHEL/Rocky)
+      ansible.builtin.command: restorecon -Rv {{ web_docroot }}
+      changed_when: false
+      failed_when: false
+      when: ansible_facts.os_family == 'RedHat'
+
+    # ---- V1 페이지 배포 ----
+    - name: Deploy index.html (Version 1)
+      ansible.builtin.copy:
+        dest: "{{ web_docroot }}/index.html"
+        content: |
+          <!doctype html>
+          <html>
+            <head><meta charset="utf-8"><title>{{ page_title }}</title></head>
+            <body style="font-family: system-ui, sans-serif; padding: 24px;">
+              <h1>{{ version_label }}</h1>
+              <p>Host: {{ ansible_hostname }}</p>
+              <p>OS: {{ ansible_distribution }} {{ ansible_distribution_version }}</p>
+              <p>Time: {{ ansible_date_time.date }} {{ ansible_date_time.time }}</p>
+            </body>
+          </html>
+        owner: root
+        group: root
+        mode: "0644"
+        force: true
+      notify: Restart web
+
+    - name: Ensure web service running
+      ansible.builtin.service:
+        name: "{{ web_service }}"
+        state: started
+        enabled: true
+
+    # ---- 인스턴스 내부에서 먼저 확인 (ACG 영향 없음) ----
+    - name: Probe locally on instance (127.0.0.1)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1/"
+        return_content: true
+      register: local_http
+      retries: 30
+      delay: 5
+      until: (local_http.status | default(0)) == 200
+             and ('Version 1' in (local_http.content | default('')))
+      failed_when: false
+
+    - name: Assert local page contains Version 1
+      ansible.builtin.assert:
+        that:
+          - (local_http.status | default(0)) == 200
+          - "'Version 1' in (local_http.content | default(''))"
+        success_msg: "✅ 인스턴스 내부 HTTP 200 & Version 1 확인"
+
+    # ---- (옵션) ALB로 외부 확인: 있으면만 체크 ----
+    - name: Read ALB domain from terraform outputs (optional)
+      delegate_to: localhost
+      run_once: true
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} output -raw alb_domain
+      register: alb_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: External probe via ALB (if present)
+      delegate_to: localhost
+      run_once: true
+      when: (alb_cmd.stdout | trim | length) > 0
+      ansible.builtin.uri:
+        url: "http://{{ alb_cmd.stdout | trim }}/"
+        return_content: true
+      register: alb_http
+      retries: 30
+      delay: 5
+      until: (alb_http.status | default(0)) == 200
+             and ('Version 1' in (alb_http.content | default('')))
+      failed_when: false
+
+    - name: Assert ALB page contains Version 1 (if checked)
+      delegate_to: localhost
+      run_once: true
+      when: alb_http is defined
+      ansible.builtin.assert:
+        that:
+          - (alb_http.status | default(0)) == 200
+          - "'Version 1' in (alb_http.content | default(''))"
+        success_msg: "✅ ALB HTTP 200 & Version 1 확인"
+
+  handlers:
+    - name: Restart web
+      ansible.builtin.service:
+        name: "{{ web_service }}"
+        state: restarted
