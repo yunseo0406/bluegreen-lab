@@ -7,7 +7,7 @@
   vars:
     terraform_dir: "../terraform"
     ssh_key_path: "~/.ssh/ncp20250904.pem"
-    ssh_user: "ubuntu"
+    ssh_user: "root"
   tasks:
     - name: Terraform apply
       ansible.builtin.command: terraform -chdir={{ terraform_dir }} apply -auto-approve
