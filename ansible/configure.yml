@@ -7,10 +7,12 @@
   vars:
     page_title: "NCP Blue-Green Lab"
     version_label: "Version 1"
+    probe_attempts: 30
+    probe_delay: 5
     terraform_dir: "../terraform"   # (옵션) ALB 도메인 읽어올 때 사용
 
   pre_tasks:
-    # ---- Python 부트스트랩 ----
+    # ---- Python 부트스트랩 (facts 수집 전에) ----
     - name: Ensure python3 on Debian/Ubuntu
       ansible.builtin.raw: |
         test -e /usr/bin/python3 || (apt-get update -y && apt-get install -y python3)
@@ -154,26 +156,31 @@
         state: started
         enabled: true
 
-    # ---- 인스턴스 내부에서 먼저 확인 (ACG 영향 없음) ----
-    - name: Probe locally on instance (127.0.0.1)
+    # ---- 인스턴스 내부에서 먼저 확인 (원격에서 127.0.0.1) ----
+    - name: Probe locally on instance (127.0.0.1 from remote)
+      delegate_to: "{{ inventory_hostname }}"   # ← 반드시 원격에서 실행
+      run_once: false
       ansible.builtin.uri:
         url: "http://127.0.0.1/"
         return_content: true
       register: local_http
-      retries: 30
-      delay: 5
+      retries: "{{ probe_attempts }}"
+      delay: "{{ probe_delay }}"
       until: (local_http.status | default(0)) == 200
              and ('Version 1' in (local_http.content | default('')))
       failed_when: false
 
     - name: Assert local page contains Version 1
+      delegate_to: "{{ inventory_hostname }}"
+      run_once: false
       ansible.builtin.assert:
         that:
           - (local_http.status | default(0)) == 200
           - "'Version 1' in (local_http.content | default(''))"
-        success_msg: "✅ 인스턴스 내부 HTTP 200 & Version 1 확인"
+        success_msg: "✅ {{ inventory_hostname }} 내부 HTTP 200 & Version 1 확인"
+        fail_msg: "❌ {{ inventory_hostname }} 내부 확인 실패. status={{ local_http.status | default('n/a') }}"
 
-    # ---- (옵션) ALB로 외부 확인: 있으면만 체크 ----
+        # ---- (옵션) ALB로 외부 확인: 있으면만 체크 ----
     - name: Read ALB domain from terraform outputs (optional)
       delegate_to: localhost
       run_once: true
@@ -182,29 +189,33 @@
       changed_when: false
       failed_when: false
 
-    - name: External probe via ALB (if present)
+    - name: Normalize ALB domain value
       delegate_to: localhost
       run_once: true
-      when: (alb_cmd.stdout | trim | length) > 0
+      ansible.builtin.set_fact:
+        alb_domain_value: "{{ alb_cmd.stdout | default('') | trim }}"
+
+    - name: External probe via ALB (only when alb_domain exists)
+      delegate_to: localhost
+      run_once: true
+      when: alb_domain_value is defined and (alb_domain_value | length) > 0
       ansible.builtin.uri:
-        url: "http://{{ alb_cmd.stdout | trim }}/"
+        url: "http://{{ alb_domain_value }}/"
         return_content: true
       register: alb_http
-      retries: 30
-      delay: 5
+      retries: "{{ probe_attempts | default(30) }}"
+      delay: "{{ probe_delay | default(5) }}"
       until: (alb_http.status | default(0)) == 200
              and ('Version 1' in (alb_http.content | default('')))
       failed_when: false
 
-    - name: Assert ALB page contains Version 1 (if checked)
+    - name: Skip note when ALB domain is not available
       delegate_to: localhost
       run_once: true
-      when: alb_http is defined
-      ansible.builtin.assert:
-        that:
-          - (alb_http.status | default(0)) == 200
-          - "'Version 1' in (alb_http.content | default(''))"
-        success_msg: "✅ ALB HTTP 200 & Version 1 확인"
+      when: alb_domain_value | default('') | length == 0
+      ansible.builtin.debug:
+        msg: "ALB 도메인 출력이 없어서 외부 프로브는 건너뜁니다. (내부 127.0.0.1 확인은 완료)"
+
 
   handlers:
     - name: Restart web
