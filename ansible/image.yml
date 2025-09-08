@@ -1,0 +1,81 @@
+---
+- name: Provision base with Terraform and create a member server image (no ASG)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    terraform_dir: "../terraform"
+    scripts_dir:   "../scripts"
+
+    # Terraform outputs 에서 인스턴스 번호 읽어올 key
+    web_instance_output_name: "web_server_instance_no"
+
+    # 생성할 이미지 이름(타임스탬프 포함)
+    image_name: "blue-v1-{{ lookup('pipe','date +%Y%m%d-%H%M%S') }}"
+
+  pre_tasks:
+    # NCP_* 가 없으면 NCLOUD_* 로 자동 폴백 (run.sh 에서 .env를 한번만 source 해두면 됨)
+    - name: Pick API keys from env (NCP_* or NCLOUD_*)
+      ansible.builtin.set_fact:
+        api_access_key: >-
+          {{ lookup('env','NCP_ACCESS_KEY') | default(lookup('env','NCLOUD_ACCESS_KEY'), true) }}
+        api_secret_key: >-
+          {{ lookup('env','NCP_SECRET_KEY') | default(lookup('env','NCLOUD_SECRET_KEY'), true) }}
+
+    - name: Ensure API keys exist
+      ansible.builtin.assert:
+        that:
+          - api_access_key | length > 0
+          - api_secret_key | length > 0
+        fail_msg: "NCP_* 또는 NCLOUD_* 환경변수를 먼저 설정하세요. (.env는 run.sh에서 한 번만 source)"
+
+  tasks:
+    - name: Terraform init (idempotent)
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} init
+      changed_when: false
+
+    - name: Terraform apply (create/update VPC, subnet, server, LB, etc.)
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} apply -auto-approve
+      register: tf_apply
+      changed_when: "'No changes.' not in tf_apply.stdout"
+
+    - name: Read web server instance number from terraform outputs
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - -chdir={{ terraform_dir }}
+          - output
+          - -raw
+          - "{{ web_instance_output_name }}"
+      register: inst_no_cmd
+      changed_when: false
+
+    - name: Fail if instance number not found
+      ansible.builtin.fail:
+        msg: "Terraform output '{{ web_instance_output_name }}' 를 찾지 못했습니다. main.tf의 output 확인 후 다시 실행하세요."
+      when: inst_no_cmd.rc != 0 or (inst_no_cmd.stdout | trim) == ""
+
+    - name: Create member server image via API (only serverInstanceNo & serverImageName)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ scripts_dir }}/create_server_image_min.py"
+          - "{{ inst_no_cmd.stdout | trim }}"
+          - "{{ image_name }}"
+      environment:
+        # 여기서만 깔끔하게 주입(전역 export 불필요)
+        NCP_ACCESS_KEY: "{{ api_access_key }}"
+        NCP_SECRET_KEY: "{{ api_secret_key }}"
+      register: create_img
+      changed_when: true
+
+    - name: Show API response and image name
+      ansible.builtin.debug:
+        msg:
+          - "요청한 이미지 이름: {{ image_name }}"
+          - "API 응답(stdout): {{ create_img.stdout | default('') }}"
+          - "API 에러(stderr):  {{ create_img.stderr | default('') }}"
+
+    # 참고: 이미지 생성은 비동기(creating -> IN_SERVICE). 여기서 종료.
+    # 필요하면 이후에 '대기/확인' 태스크를 추가 가능.

@@ -26,7 +26,7 @@ variable "public_lb_cidr" {
 variable "ssh_public_key_path" {
   type    = string
   default = "~/.ssh/ncp20250904.pub"
-  
+
 }
 
 ###############################
@@ -34,22 +34,28 @@ variable "ssh_public_key_path" {
 ###############################
 variable "enable_asg_blue" {
   type    = bool
-  default = false   # 기본은 비활성(단일 서버만)
+  default = false # 기본은 비활성(단일 서버만)
 }
 
 variable "attach_single_server" {
   type    = bool
-  default = true    # 기본은 단일 서버를 TG에 붙여둠
+  default = true # 기본은 단일 서버를 TG에 붙여둠
 }
 
 # 콘솔에서 만든 멤버 서버 이미지 번호 (필수)
-variable "server_image_product_code" {
+variable "server_image_no" {
   type    = string
-  default = "" 
+  default = ""
 }
 
 # 서버 스펙(제품코드). 모르면 나중에 -var 로 넣거나 state/콘솔에서 복사
-variable "server_product_code_manual" {
+variable "server_product_code" {
+  type    = string
+  default = ""
+}
+
+# 새 커스텀 이미지 변수 (권장)
+variable "server_image_product_code" {
   type    = string
   default = ""
 }

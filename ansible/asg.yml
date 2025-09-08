@@ -1,0 +1,67 @@
+---
+- name: Create ASG (3x) from member server image
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    terraform_dir: "../terraform"
+    scripts_dir:   "../scripts"
+    # 특정 이미지 이름을 지정하려면 -e image_name=blue-v1-YYYYMMDD-HHMMSS 로 덮어쓰기
+    image_name: ""
+
+  pre_tasks:
+    - name: Ensure NCP API keys in env
+      ansible.builtin.assert:
+        that:
+          - lookup('env','NCP_ACCESS_KEY') | length > 0
+          - lookup('env','NCP_SECRET_KEY') | length > 0
+        fail_msg: "NCP_ACCESS_KEY / NCP_SECRET_KEY 가 없습니다. (.env 로딩 확인)"
+
+  tasks:
+    - name: Resolve member server image number (by name or latest)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ scripts_dir }}/find_member_server_image_no.py"
+          - "{{ image_name }}"
+      register: img_no
+      changed_when: false
+
+    - name: Fail if no image number
+      ansible.builtin.fail:
+        msg: "멤버 서버 이미지 번호를 찾지 못했습니다. image_name 을 정확히 지정하세요."
+      when: img_no.rc != 0 or (img_no.stdout | trim) == ""
+
+    - name: Write zz-asg.auto.tfvars.json
+      ansible.builtin.copy:
+        dest: "{{ terraform_dir }}/zz-asg.auto.tfvars.json"
+        mode: "0644"
+        content: |
+          {
+            "member_server_image_no": "{{ img_no.stdout | trim }}",
+            "login_key_name": "ncp20250904",
+            "server_product_code": "SVR.VSVR.STAND.C002.M004",
+            "asg_capacity": 3
+          }
+
+    - name: Terraform init (idempotent)
+      ansible.builtin.command: terraform -chdir={{ terraform_dir }} init
+      changed_when: false
+
+    - name: Terraform apply ASG (3x)
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - "-chdir={{ terraform_dir }}"
+          - apply
+          - -auto-approve
+          - -var-file=zz-asg.auto.tfvars.json
+      register: tf_apply
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "member_server_image_no: {{ img_no.stdout | trim }}"
+          - "Terraform stdout (truncated): {{ (tf_apply.stdout | default(''))[-1200:] }}"
+          - "Terraform stderr (truncated): {{ (tf_apply.stderr | default(''))[-1200:] }}"

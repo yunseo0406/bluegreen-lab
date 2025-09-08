@@ -89,7 +89,7 @@ resource "ncloud_server" "web" {
   server_image_number = data.ncloud_server_image_numbers.kvm-image.image_number_list.0.server_image_number
   server_spec_code    = data.ncloud_server_specs.kvm-spec.server_spec_list.0.server_spec_code
   init_script_no      = ncloud_init_script.ssh_bootstrap.id
-  login_key_name = "ncp20250904"
+  login_key_name      = "ncp20250904"
 
   network_interface {
     network_interface_no = ncloud_network_interface.web_nic.id
